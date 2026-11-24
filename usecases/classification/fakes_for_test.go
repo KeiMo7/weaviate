@@ -109,7 +109,7 @@ func (f *fakeVectorRepoKNN) GetUnclassified(ctx context.Context,
 
 func (f *fakeVectorRepoKNN) AggregateNeighbors(ctx context.Context, vector []float32,
 	class string, properties []string, k int,
-	filter *libfilters.LocalFilter,
+	filter *libfilters.LocalFilter, rules VotingRules,
 ) ([]NeighborRef, error) {
 	f.Lock()
 	defer f.Unlock()
@@ -230,7 +230,7 @@ func (f *fakeVectorRepoContextual) GetUnclassified(ctx context.Context,
 
 func (f *fakeVectorRepoContextual) AggregateNeighbors(ctx context.Context, vector []float32,
 	class string, properties []string, k int,
-	filter *libfilters.LocalFilter,
+	filter *libfilters.LocalFilter, rules VotingRules,
 ) ([]NeighborRef, error) {
 	panic("not implemented")
 }

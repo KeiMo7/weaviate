@@ -31,7 +31,8 @@ func (c *Classifier) classifyItemUsingKNN(item search.Result, itemIndex int,
 	// K is guaranteed to be set by now, no danger in dereferencing the pointer
 	res, err := c.vectorRepo.AggregateNeighbors(ctx, item.Vector,
 		item.ClassName,
-		params.ClassifyProperties, int(*settings.K), filters.TrainingSet())
+		params.ClassifyProperties, int(*settings.K), filters.TrainingSet(),
+		settings.VotingRules())
 	if err != nil {
 		return fmt.Errorf("classify %s/%s: %w", item.ClassName, item.ID, err)
 	}
@@ -39,13 +40,34 @@ func (c *Classifier) classifyItemUsingKNN(item search.Result, itemIndex int,
 	var classified []string
 
 	for _, agg := range res {
-		meta := agg.Meta()
-		item.Schema.(map[string]interface{})[agg.Property] = models.MultipleRef{
-			&models.SingleRef{
-				Beacon:         agg.Beacon,
-				Classification: meta,
-			},
+		if agg.Abstained {
+			// abstaining is a normal outcome: no label reached the confidence
+			// threshold, so the property is left untouched
+			continue
 		}
+
+		var refs models.MultipleRef
+		if len(agg.Winners) > 0 {
+			// multi-label: write every assigned label, in the deterministic
+			// order the aggregator produced
+			for _, winner := range agg.Winners {
+				refs = append(refs, &models.SingleRef{
+					Beacon:         winner.Beacon,
+					Classification: winner.Meta(agg.OverallCount),
+				})
+			}
+		} else {
+			refs = models.MultipleRef{
+				&models.SingleRef{
+					Beacon:         agg.Beacon,
+					Classification: agg.Meta(),
+				},
+			}
+		}
+
+		// the property is replaced as a whole, so re-running the same
+		// classification never stacks or duplicates references
+		item.Schema.(map[string]interface{})[agg.Property] = refs
 
 		// append list of actually classified (can differ from scope!) properties,
 		// so we can build the object meta information

@@ -13,6 +13,7 @@ package classification
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -29,6 +30,7 @@ type runWorker struct {
 	jobs         []search.Result
 	successCount *int64
 	errorCount   *int64
+	causes       *failureCauseCounter
 	ec           errorcompounder.ErrorCompounder
 	classify     ClassifyItemFn
 	batchWriter  Writer
@@ -50,13 +52,17 @@ func (w *runWorker) work(ctx context.Context, wg *sync.WaitGroup) {
 		// if yes, then abort the classifier worker
 		if err := ctx.Err(); err != nil {
 			w.ec.Add(err)
+			w.causes.add(CauseOf(err))
 			atomic.AddInt64(w.errorCount, 1)
 			break
 		}
 		originalIndex := (i * w.workerCount) + w.id
 		err := w.classify(item, originalIndex, w.params, w.filters, w.batchWriter)
 		if err != nil {
+			// a single failed item must not interrupt the batch, but it is
+			// counted, including the category of the failure
 			w.ec.Add(err)
+			w.causes.add(CauseOf(err))
 			atomic.AddInt64(w.errorCount, 1)
 		} else {
 			atomic.AddInt64(w.successCount, 1)
@@ -68,6 +74,7 @@ func newRunWorker(id int, workerCount int, rw *runWorkers) *runWorker {
 	return &runWorker{
 		successCount: rw.successCount,
 		errorCount:   rw.errorCount,
+		causes:       rw.causes,
 		ec:           rw.ec,
 		params:       rw.params,
 		filters:      rw.filters,
@@ -82,6 +89,7 @@ type runWorkers struct {
 	workers      []*runWorker
 	successCount *int64
 	errorCount   *int64
+	causes       *failureCauseCounter
 	ec           errorcompounder.ErrorCompounder
 	classify     ClassifyItemFn
 	params       models.Classification
@@ -100,6 +108,7 @@ func newRunWorkers(amount int, classifyFn ClassifyItemFn,
 		workers:      make([]*runWorker, amount),
 		successCount: &successCount,
 		errorCount:   &errorCount,
+		causes:       newFailureCauseCounter(),
 		ec:           errorcompounder.NewSafe(),
 		classify:     classifyFn,
 		params:       params,
@@ -136,8 +145,19 @@ func (ws *runWorkers) work(ctx context.Context) runWorkerResults {
 
 	res := ws.batchWriter.Stop()
 
-	if res.SuccessCount() != *ws.successCount || res.ErrorCount() != *ws.errorCount {
+	// the save side can only be off if saving itself failed or lost items;
+	// classification failures (ws.errorCount) must not be mistaken for save
+	// failures
+	if res.ErrorCount() > 0 || res.SuccessCount() != *ws.successCount {
 		ws.ec.Add(errors.New("data save error"))
+	}
+
+	if *ws.errorCount > 0 {
+		summary := ws.causes.summary()
+		ws.logger.WithField("action", "classification_run").
+			WithField("failure_causes", summary).
+			Warnf("%d item(s) failed to classify", *ws.errorCount)
+		ws.ec.Add(fmt.Errorf("item failure causes: %s", summary))
 	}
 
 	if res.Err() != nil {

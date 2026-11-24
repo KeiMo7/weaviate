@@ -53,3 +53,15 @@ func (r NeighborRef) Meta() *models.ReferenceMetaClassification {
 func ptFloat64(in float64) *float64 {
 	return &in
 }
+
+// Meta builds the classification meta of a single assigned label of a
+// multi-label aggregation, with the same field semantics as NeighborRef.Meta.
+func (l NeighborLabel) Meta(overallCount int) *models.ReferenceMetaClassification {
+	return NeighborRef{
+		Beacon:       l.Beacon,
+		OverallCount: overallCount,
+		WinningCount: l.Count,
+		LosingCount:  overallCount - l.Count,
+		Distances:    l.Distances,
+	}.Meta()
+}

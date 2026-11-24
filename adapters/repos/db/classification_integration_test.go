@@ -133,7 +133,7 @@ func TestClassifications(t *testing.T) {
 		t.Run("close to politics (no filters)", func(t *testing.T) {
 			res, err := repo.AggregateNeighbors(context.Background(),
 				[]float32{0.7, 0.01, 0.01}, "Article",
-				[]string{"exactCategory", "mainCategory"}, 1, nil)
+				[]string{"exactCategory", "mainCategory"}, 1, nil, classification.VotingRules{})
 
 			expectedRes := []classification.NeighborRef{
 				{
@@ -169,7 +169,7 @@ func TestClassifications(t *testing.T) {
 		t.Run("close to food and drink (no filters)", func(t *testing.T) {
 			res, err := repo.AggregateNeighbors(context.Background(),
 				[]float32{0.01, 0.01, 0.66}, "Article",
-				[]string{"exactCategory", "mainCategory"}, 1, nil)
+				[]string{"exactCategory", "mainCategory"}, 1, nil, classification.VotingRules{})
 
 			expectedRes := []classification.NeighborRef{
 				{
@@ -217,7 +217,7 @@ func TestClassifications(t *testing.T) {
 			}
 			res, err := repo.AggregateNeighbors(context.Background(),
 				[]float32{0.01, 0.01, 0.66}, "Article",
-				[]string{"exactCategory", "mainCategory"}, 1, filter)
+				[]string{"exactCategory", "mainCategory"}, 1, filter, classification.VotingRules{})
 
 			expectedRes := []classification.NeighborRef{
 				{

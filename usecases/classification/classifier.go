@@ -102,7 +102,7 @@ type VectorRepo interface {
 		properties []string, propertiesToReturn []string, filter *libfilters.LocalFilter) ([]search.Result, error)
 	AggregateNeighbors(ctx context.Context, vector []float32,
 		class string, properties []string, k int,
-		filter *libfilters.LocalFilter) ([]NeighborRef, error)
+		filter *libfilters.LocalFilter, rules VotingRules) ([]NeighborRef, error)
 	VectorSearch(ctx context.Context, params dto.GetParams, targetVectors []string, searchVectors []models.Vector) ([]search.Result, error)
 	ZeroShotSearch(ctx context.Context, vector []float32,
 		class string, properties []string,
@@ -129,6 +129,17 @@ type NeighborRef struct {
 	LosingCount  int
 
 	Distances NeighborRefDistances
+
+	// Winners holds all assigned labels when multi-label classification is
+	// enabled (VotingRules.MaxLabels > 1), ordered by score (desc), then
+	// mean distance (asc), then beacon (asc). It is nil for legacy
+	// single-label requests, where only Beacon is set.
+	Winners []NeighborLabel
+
+	// Abstained is true when no label reached the configured confidence
+	// threshold (VotingRules.MinScore). Abstention is a normal outcome: the
+	// property is simply left unassigned.
+	Abstained bool
 }
 
 func (c *Classifier) classGetterWithAuthzFunc(ctx context.Context, principal *models.Principal) func(string) (*models.Class, error) {
@@ -333,7 +344,34 @@ func (c *Classifier) parseKNNSettings(params *models.Classification) error {
 	}
 	settings.K = v
 
+	maxLabels, err := extractNumberFromMap(asMap, "maxLabels")
+	if err != nil {
+		return err
+	}
+	settings.MaxLabels = maxLabels
+
+	distanceWeighted, err := extractBoolFromMap(asMap, "distanceWeighted")
+	if err != nil {
+		return err
+	}
+	settings.DistanceWeighted = distanceWeighted
+
+	minScore, err := extractFloatFromMap(asMap, "minScore")
+	if err != nil {
+		return err
+	}
+	settings.MinScore = minScore
+
+	minRelativeScore, err := extractFloatFromMap(asMap, "minRelativeScore")
+	if err != nil {
+		return err
+	}
+	settings.MinRelativeScore = minRelativeScore
+
 	settings.SetDefaults()
+	if err := settings.Validate(); err != nil {
+		return err
+	}
 	params.Settings = settings
 
 	return nil
@@ -341,6 +379,23 @@ func (c *Classifier) parseKNNSettings(params *models.Classification) error {
 
 type ParamsKNN struct {
 	K *int32 `json:"k"`
+
+	// DistanceWeighted enables distance-weighted voting, see
+	// VotingRules.DistanceWeighted. Defaults to false (legacy majority vote).
+	DistanceWeighted bool `json:"distanceWeighted,omitempty"`
+
+	// MaxLabels caps the number of labels assigned per property. Defaults
+	// to 1 (legacy single-label behavior).
+	MaxLabels *int32 `json:"maxLabels,omitempty"`
+
+	// MinScore is the minimal normalized score a label needs to be assigned,
+	// see VotingRules.MinScore. Defaults to 0 (no abstention).
+	MinScore *float64 `json:"minScore,omitempty"`
+
+	// MinRelativeScore requires a label's score to be at least this fraction
+	// of the top label's score, see VotingRules.MinRelativeScore. Defaults
+	// to 0 (disabled).
+	MinRelativeScore *float64 `json:"minRelativeScore,omitempty"`
 }
 
 func (params *ParamsKNN) SetDefaults() {
@@ -348,6 +403,41 @@ func (params *ParamsKNN) SetDefaults() {
 		defaultK := int32(3)
 		params.K = &defaultK
 	}
+	if params.MaxLabels == nil {
+		defaultMaxLabels := int32(1)
+		params.MaxLabels = &defaultMaxLabels
+	}
+}
+
+func (params *ParamsKNN) Validate() error {
+	if *params.MaxLabels < 1 {
+		return errors.Errorf("settings.maxLabels must be >= 1, got %d", *params.MaxLabels)
+	}
+	if params.MinScore != nil && (*params.MinScore < 0 || *params.MinScore > 1) {
+		return errors.Errorf("settings.minScore must be in [0, 1], got %f", *params.MinScore)
+	}
+	if params.MinRelativeScore != nil && (*params.MinRelativeScore < 0 || *params.MinRelativeScore > 1) {
+		return errors.Errorf("settings.minRelativeScore must be in [0, 1], got %f", *params.MinRelativeScore)
+	}
+	return nil
+}
+
+// VotingRules maps the user-facing settings to the rules the neighbor
+// aggregation is executed with.
+func (params *ParamsKNN) VotingRules() VotingRules {
+	rules := VotingRules{
+		DistanceWeighted: params.DistanceWeighted,
+	}
+	if params.MaxLabels != nil {
+		rules.MaxLabels = *params.MaxLabels
+	}
+	if params.MinScore != nil {
+		rules.MinScore = *params.MinScore
+	}
+	if params.MinRelativeScore != nil {
+		rules.MinRelativeScore = *params.MinRelativeScore
+	}
+	return rules
 }
 
 func extractNumberFromMap(in map[string]interface{}, field string) (*int32, error) {
@@ -369,4 +459,39 @@ func extractNumberFromMap(in map[string]interface{}, field string) (*int32, erro
 	}
 
 	return nil, nil
+}
+
+func extractFloatFromMap(in map[string]interface{}, field string) (*float64, error) {
+	unparsed, present := in[field]
+	if !present {
+		return nil, nil
+	}
+
+	parsed, ok := unparsed.(json.Number)
+	if !ok {
+		return nil, errors.Errorf("settings.%s must be number, got %T",
+			field, unparsed)
+	}
+
+	asFloat64, err := parsed.Float64()
+	if err != nil {
+		return nil, errors.Wrapf(err, "settings.%s", field)
+	}
+
+	return &asFloat64, nil
+}
+
+func extractBoolFromMap(in map[string]interface{}, field string) (bool, error) {
+	unparsed, present := in[field]
+	if !present {
+		return false, nil
+	}
+
+	parsed, ok := unparsed.(bool)
+	if !ok {
+		return false, errors.Errorf("settings.%s must be bool, got %T",
+			field, unparsed)
+	}
+
+	return parsed, nil
 }
