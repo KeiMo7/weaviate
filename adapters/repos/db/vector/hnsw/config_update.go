@@ -22,6 +22,45 @@ import (
 	ent "github.com/weaviate/weaviate/entities/vectorindex/hnsw"
 )
 
+// ErrCompressionRebuildRequired is returned by the legacy in-place config update
+// when the live index already stores one encoding and the request asks to turn
+// compression off or use a different encoding identity. The caller must run the
+// managed shadow-build/swap state machine rather than treating schema echo as
+// an applied form.
+var ErrCompressionRebuildRequired = errors.New("compression form change requires a managed rebuild and swap")
+
+type compressionFormKey struct {
+	codec     string
+	bits      int16
+	centering bool
+}
+
+func compressionFormKeyFromConfig(c ent.UserConfig) compressionFormKey {
+	switch {
+	case c.PQ.Enabled:
+		return compressionFormKey{codec: "pq", bits: 8}
+	case c.BQ.Enabled:
+		return compressionFormKey{codec: "bq", bits: 1}
+	case c.SQ.Enabled:
+		return compressionFormKey{codec: "sq", bits: 8}
+	case c.RQ.Enabled:
+		return compressionFormKey{codec: "rq", bits: c.RQ.Bits, centering: c.RQ.Centering}
+	default:
+		return compressionFormKey{codec: "none", bits: 32}
+	}
+}
+
+func (h *hnsw) activeCompressionFormKey() compressionFormKey {
+	h.compressActionLock.RLock()
+	defer h.compressActionLock.RUnlock()
+	return compressionFormKeyFromConfig(ent.UserConfig{
+		PQ: h.pqConfig,
+		BQ: h.bqConfig,
+		SQ: h.sqConfig,
+		RQ: h.rqConfig,
+	})
+}
+
 func ValidateUserConfigUpdate(initial, updated config.VectorIndexConfig) error {
 	initialParsed, ok := initial.(ent.UserConfig)
 	if !ok {
@@ -121,6 +160,13 @@ func (h *hnsw) UpdateUserConfig(updated config.VectorIndexConfig, callback func(
 	h.configuredFilterStrategy.Store(int32(filterStrategyFromConfig(parsed.FilterStrategy)))
 
 	if !parsed.PQ.Enabled && !parsed.BQ.Enabled && !parsed.SQ.Enabled && !parsed.RQ.Enabled {
+		if h.compressed.Load() {
+			activeForm := h.activeCompressionFormKey()
+			callback()
+			return errors.Wrapf(ErrCompressionRebuildRequired,
+				"cannot disable %s/%d-bit encoding in place; raw vectors remain available, use the managed form switch",
+				activeForm.codec, activeForm.bits)
+		}
 		callback()
 		return nil
 	}
@@ -136,6 +182,16 @@ func (h *hnsw) UpdateUserConfig(updated config.VectorIndexConfig, callback func(
 			callback()
 			return errors.Errorf("rq centering is immutable: attempted change from \"%v\" to \"%v\"",
 				h.rqConfig.Centering, parsed.RQ.Centering)
+		}
+	}
+
+	if h.compressed.Load() {
+		activeForm := h.activeCompressionFormKey()
+		requestedForm := compressionFormKeyFromConfig(parsed)
+		if activeForm != requestedForm {
+			callback()
+			return errors.Wrapf(ErrCompressionRebuildRequired,
+				"cannot change encoded form in place from %+v to %+v", activeForm, requestedForm)
 		}
 	}
 

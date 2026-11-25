@@ -85,6 +85,32 @@ This document is the single source of truth for Prometheus metrics exposed by We
 | `vector_dimensions_sum` | Total dimensions in a shard | `Gauge` | `class_name, collection_namespace, shard_name` | ❌ High 
 | `vector_index_durations_ms` | Duration of typical vector index operations (insert, delete) | `Summary` | `class_name, operation, shard_name, step` | ❌ High 
 
+#### Quantization Target, Evaluation and Switch Metrics
+| Name | Description | Type | Labels | High Cardinality |
+|---|---|---|---|---|
+| `weaviate_quantization_target_min_recall` | Declared minimum recall target for a collection vector. | `Gauge` | `collection, vector, alias` | ⚠️ Medium: one series per collection vector |
+| `weaviate_quantization_effective_form_info` | Effective codec/bits observed from written encoding state. Value is always 1. | `Gauge` | `collection, vector, codec, bits, form` | ⚠️ Medium |
+| `weaviate_quantization_encoded_bytes` | Measured encoded-vector bytes aggregated across shard/replica units. | `Gauge` | `collection, vector, codec` | ⚠️ Medium |
+| `weaviate_quantization_raw_vector_bytes` | Retained full-precision vector bytes used for evaluation/rescoring. | `Gauge` | `collection, vector, codec` | ⚠️ Medium |
+| `weaviate_quantization_compression_ratio` | Measured raw bytes divided by encoded bytes. | `Gauge` | `collection, vector, codec` | ⚠️ Medium |
+| `weaviate_quantization_evaluations_total` | Recall evaluations by terminal status and sampling strategy. | `Counter` | `collection, vector, status, strategy` | ⚠️ Medium |
+| `weaviate_quantization_evaluation_last_recall` | Last successful measured recall@k. Absent for failed/canceled evaluations. | `Gauge` | `collection, vector, strategy, k` | ⚠️ Medium |
+| `weaviate_quantization_evaluation_samples` | Number of queries included in an evaluation. | `Histogram` | `collection, vector, strategy` | ⚠️ Medium |
+| `weaviate_quantization_evaluation_duration_seconds` | Evaluation duration. | `Histogram` | `collection, vector, status` | ⚠️ Medium |
+| `weaviate_quantization_evaluation_failures_total` | Failed/canceled evaluations by failure class. | `Counter` | `collection, vector, class` | ⚠️ Medium |
+| `weaviate_quantization_switches_started_total` | Form switches started by destination form. | `Counter` | `collection, vector, form` | ⚠️ Medium |
+| `weaviate_quantization_switches_completed_total` | Switches that promoted the destination form on all units. | `Counter` | `collection, vector, form` | ⚠️ Medium |
+| `weaviate_quantization_switches_canceled_total` | Switches canceled before the swap barrier. | `Counter` | `collection, vector, form` | ⚠️ Medium |
+| `weaviate_quantization_switches_rolled_back_total` | Switches restored to the prior form after failure. | `Counter` | `collection, vector, form` | ⚠️ Medium |
+| `weaviate_quantization_switches_recovered_total` | Nonterminal switch records resumed at startup. | `Counter` | `collection, vector, form` | ⚠️ Medium |
+| `weaviate_quantization_switch_failures_total` | Unit/state switch failures by phase. | `Counter` | `collection, vector, phase` | ⚠️ Medium |
+| `weaviate_quantization_switch_active` | Whether a collection/vector switch is active. | `Gauge` | `collection, vector` | ⚠️ Medium |
+| `weaviate_quantization_switch_progress_fraction` | Aggregated durable progress fraction; not obtained by a full data scan. | `Gauge` | `collection, vector` | ⚠️ Medium |
+| `weaviate_quantization_switch_units_total` | Total shard/replica units in a switch. | `Gauge` | `collection, vector` | ⚠️ Medium |
+| `weaviate_quantization_switch_units_complete` | Completed shard/replica units. | `Gauge` | `collection, vector` | ⚠️ Medium |
+
+Per-shard/replica progress stays in the management API rather than Prometheus, avoiding an additional `shard` label explosion.
+
 #### Startup Metrics
 | Name | Description | Type | Labels | High Cardinality |
 |---|---|---|---|---|
